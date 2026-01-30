@@ -11,6 +11,7 @@ id_ed25519*
 *.vault
 *.secrets
 secrets.yml
+**/authorized_keys
 
 # Terraform (state + local working dir)
 **/.terraform/
@@ -21,7 +22,7 @@ secrets.yml
 # Terraform vars (often contains secrets)
 **/terraform.tfvars
 **/*.auto.tfvars
-
+**/*.tfvars
 
 # Inventory / host vars that may contain IPs or tokens (we'll sanitize later)
 ansible/inventory/**/host_vars/*
