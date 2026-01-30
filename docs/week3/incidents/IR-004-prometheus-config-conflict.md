@@ -1,105 +1,225 @@
-# IR-004 — Prometheus config conflict caused alerts/rules to be ignored
+# IR-004 — Duplicate Prometheus and Alertmanager deployments caused configuration conflicts
 
 ## Summary
-
-Alerting behavior became inconsistent after Prometheus was started in two different ways (Docker Compose and a separate manual run). Prometheus and/or Alertmanager appeared “up,” but rules and configuration changes were not taking effect as expected.
+Monitoring and alerting behavior became inconsistent due to Prometheus and Alertmanager being deployed simultaneously via systemd and Docker Compose. Configuration changes were applied to one deployment while traffic was being served by another, leading to unclear ownership of active services.
 
 ---
 
 ## Impact
 
-- Alert rules were not loading reliably
-- Troubleshooting became ambiguous because multiple Prometheus instances were responding on different containers/ports
-- Increased time-to-diagnosis due to config ambiguity (which Prometheus instance was “the real one”?)
+- Alert rules and Alertmanager configuration were inconsistently applied
+- Port conflicts occurred on monitoring endpoints
+- Alerts did not reliably fire
+- Troubleshooting time increased due to ambiguous service state
+- Delayed validation of monitoring and remediation workflows
 
 ---
 
 ## Detection
 
-Symptoms included one or more of:
+After deploying Prometheus and Grafana with Docker Compose, Alertmanager was installed natively using systemd. This created multiple active monitoring services.  
 
-- UI showed Prometheus running, but updated rules did not appear
+Alertmanager was installed and enabled as a host-level service:  
 
-- `/targets` looked correct but alerts did not fire
+```
+alertmanager.service - Prometheus Alertmanager
+    Loaded: loaded (/etc/systemd/system/alertmanager.service; enabled; vendor preset: disabled)
+    Active: active (running) since Tue 2026-01-27 14:18:42 EST; 3min ago
+```
 
-- Container logs showed configuration paths that did not match expected files
+Later, Prometheus and Grafana were launched via Docker Compose:  
 
-- Multiple containers existed for Prometheus, making it unclear which was serving traffic
+`docker compose up -d`
+
+Process and container checks revealed overlapping services:  
+
+```
+[+] up 10/12 ✔ Image p... Pulled 1.5s 
+✔ Network... Created 0.2s 
+✘ Contain... Error response from daemon: Conflict. The container name "/prometheus" is already in use by container "119a51c71cc10dd40cfee8e00e3f9479e4f64cc6f358cbe352aaf22a58f4c84a". You have to remove (or rename) that container to be able to reuse that name. 0.0s 
+⠋ Contain... Creating 0.0s 
+⠋ Contain... Creating 0.0s 
+Error response from daemon: Conflict. The container name "/prometheus" is already in use by container "119a51c71cc10dd40cfee8e00e3f9479e4f64cc6f358cbe352aaf22a58f4c84a". You have to remove (or rename) that container to be able to reuse that name.
+```
+
+Port inspection showed conflicting listeners:  
+
+```
+[+] up 2/2 ✔ Container grafana Created 0.0s 
+✔ Container prometheus Created 0.1s 
+Error response from daemon: driver failed programming external connectivity on endpoint alertmanager (07d2d8ab847a5a08712c235d433e320ada5881f6b2678dd42b38e11f0930a04f): Error starting userland proxy: listen tcp4 0.0.0.0:9093: bind: address already in use
+```
+
+Key detection commands:
+
+```
+docker ps
+ps aux | grep -E "prometheus|alertmanager"
+pgrep -a prometheus
+ss -ltnp | grep :9093
+```
 
 ---
 
 ## Root Cause
 
-Prometheus was running as **two separate instances**:
-1. One managed by **Docker Compose** (with its own volume mounts and config path)
-2. Another started manually (or via a separate container run) using a different config/rules directory
+Two parallel deployment models were active:
 
-Because each instance referenced different files and mounts, updates were made to one set of files while the active Prometheus instance was reading from another.
+### 1. Systemd-managed Alertmanager
 
-Contributing factors:
-- Config file path/volume mounts differed between the two runs
-- Container naming made it easy to “exec” into the wrong Prometheus container
-- Port mappings made both appear reachable, masking the duplication
+Alertmanager was installed manually and registered as a system service using:
+
+- Binary in `/usr/local/bin`
+
+- Config in `/etc/alertmanager/alertmanager.yml`
+
+- Service unit in `/etc/systemd/system/alertmanager.service`
+
+This service was enabled and running:
+
+```
+alertmanager.service - Prometheus Alertmanager
+    Loaded: loaded (/etc/systemd/system/alertmanager.service; enabled; vendor preset: disabled)
+    Active: active (running) since Tue 2026-01-27 14:18:42 EST; 3min ago
+```
+
+### 2. Docker Compose Monitoring Stack
+
+Prometheus, Grafana, and later Alertmanager were deployed using Docker Compose with mounted configuration files:
+
+| NAMES         | IMAGE                   | PORTS                |
+| ------------- |:-----------------------:|:--------------------:|
+| prometheus    | prom/prometheus:latest  |0.0.0.0:9090->9090/tcp|
+| grafana       | grafana/grafana:latest  |0.0.0.0:3000->3000/tcp|
+| alert manager | prom/alertmanager:latest|0.0.0.0:9093->9093/tcp|
+
+This resulted in:
+- Host-level Alertmanager running alongside container Alertmanager
+- Possible host-level Prometheus alongside container Prometheus
+- Different configuration paths and rule directories
+- Multiple services binding to the same ports
+
+Because each deployment referenced different config locations, updates were made to container files while systemd services were still active, causing configuration drift.
 
 ---
 
 ## Resolution
 
-1. Identified duplicate Prometheus containers:
-
-`docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}"`
-
-2. Determined which instance should be canonical:
-    - Kept the **Docker Compose** stack as the source of truth
-
-3. Stopped and removed the non-canonical Prometheus container:
+1. Enumerated all running monitoring processes:
 
 ```
-docker stop <non_compose_prometheus>
-docker rm <non_compose_prometheus>
+docker ps
+ps aux | grep prometheus
+pgrep -a prometheus
 ```
 
-4. Verified Compose configuration and mounts were correct:
+2. Terminated stray host Prometheus processes:
+
+`sudo pkill -x prometheus`
+
+Verified termination:
+
+`36819 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/var/lib/prometheus`
+
+3. Traced remaining processes using process tree inspection:
 
 ```
-docker compose ps
-docker compose logs prometheus --tail=50
-docker exec -it <compose_prometheus_container> ls -la /etc/prometheus
+systemd─┬─alertmanager───7*[{alertmanager}]
+        └─prometheus───6*[{prometheus}]
 ```
 
-5. Restarted the Compose stack after confirming the correct config/rules were present:
+4. Stopped and disabled systemd Alertmanager:
+
+```
+sudo systemctl stop alertmanager
+sudo systemctl disable alertmanager
+```
+
+5. Removed duplicate containers:
+
+```
+docker stop alertmanager || true
+docker rm alertmanager || true
+```
+
+6. Standardized on Docker Compose as the canonical deployment:
 
 ```
 docker compose down
 docker compose up -d
 ```
 
+7. Verified container mounts and rule paths:
+
+```
+docker inspect prometheus --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+docker exec -it prometheus ls -la /etc/prometheus
+docker exec -it prometheus ls -la /etc/prometheus/rules
+```
+
 ---
 
 ## Verification
 
-- Only one Prometheus container remained running
-- Prometheus logs confirmed the expected config file path was being loaded
-- Rule files appeared in the Prometheus UI and/or logs after restart
-- Alerts fired as expected when targets were intentionally made unavailable
+### After consolidation:
+- Only one Prometheus and one Alertmanager container were running
+- Port 9093 was bound exclusively to container Alertmanager
+- Prometheus logs confirmed correct rule loading
+- Alert files were visible inside the container
+- Alerts fired correctly during controlled failure tests
+
+### Verification evidence:
+
+####Containers
+
+| CONTAINER ID  | IMAGE                    | COMMAND                 | STATUS       |   PORTS                |
+| ------------- |:------------------------:|:-----------------------:|:------------:|:----------------------:|
+| b3a91f72aa21  | prom/prometheus:latest   | "/bin/prometheus ..."   | Up 5 minutes | 0.0.0.0:9090->9090/tcp |
+| a12c92bc91fd  | prom/alertmanager:latest | "/bin/alertmanager ..." | Up 5 minutes | 0.0.0.0:9093->9093/tcp |
+| c92a21de7734  | grafana/grafana:latest   | "/run.sh"               | Up 5 minutes | 0.0.0.0:3000->3000/tcp |
+
+#### Port Ownership
+
+`LISTEN 0      4096    0.0.0.0:9093    0.0.0.0:*    users:(("docker-proxy",pid=42112,fd=4))`
+
+#### Prometheus logs
+
+```
+level=info ts=2026-01-27T19:43:12Z caller=rule_manager.go:520 msg="Loading rules" file=/etc/prometheus/rules/node-alerts.yml
+level=info ts=2026-01-27T19:43:12Z caller=rule_manager.go:530 msg="Completed loading of rules"
+level=info ts=2026-01-27T19:43:13Z caller=main.go:1010 msg="Server is ready to receive web requests."
+```
+
+#### Rules Visible in Container
+
+```
+total 16
+drwxr-xr-x 2 root root 4096 Jan 27 19:42 .
+drwxr-xr-x 4 root root 4096 Jan 27 19:40 ..
+-rw-r--r-- 1 root root 1782 Jan 27 19:41 node-alerts.yml
+-rw-r--r-- 1 root root 2013 Jan 27 19:41 node-extra-alerts.yml
+```
+
+#### Alert Test
+
+`"InstanceDown"`
 
 ---
 
 ## Prevention
 
-- Define a single “source of truth” for running Prometheus (Compose only)
+- Use a single orchestration method per service (Docker Compose only)
 
-- Add a quick pre-check before changes:
+- Avoid mixing systemd-managed and container-managed monitoring services
 
-    - `docker ps` to confirm there is only one Prometheus instance
-    - Validate mounts: `docker inspect <container> | grep -A2 Mounts`
+- Document canonical configuration paths in runbooks
 
-- Use consistent container naming conventions and avoid manual `docker run` for services managed by Compose
+- Require `docker ps` and `ss -ltnp` validation before production changes
 
-- Document expected config/rules paths in the Week 3 runbook
+- Add deployment ownership notes to architecture docs
 
 ---
 
 ## Lessons Learned
 
-Service orchestration failures can look like application failures. When behavior is inconsistent, first verify there is a single running instance and that the active instance is reading from the intended configuration and rule files.
+Mixing deployment models introduces hidden operational complexity. Reliable observability depends on clearly defined service ownership, lifecycle management, and configuration authority. Before debugging application behavior, active processes and ports must be verified.
