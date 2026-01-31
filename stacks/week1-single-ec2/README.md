@@ -1,11 +1,5 @@
 # Week 1 — Single EC2 Baseline (Terraform)
 
-This stack is the Week 1 baseline for the terraform-platform repo.
-
-It provisions a single AWS EC2 instance with enterprise-style tagging and clean Terraform structure (variables, outputs, tfvars template). This is the “hello world” foundation that later weeks build on (VPC segmentation, bastion access, monitoring, etc.).
-
----
-
 ## What This Builds
 
 - 1× EC2 instance (Amazon Linux 2023)
@@ -16,17 +10,19 @@ It provisions a single AWS EC2 instance with enterprise-style tagging and clean 
 
 ---
 
-## Files
+## Inputs
 
-- `main.tf` — core resources (EC2 + SG)
+Set in `terraform.tfvars` (created from `terraform.tfvars.example`):
 
-- `variables.tf` — input variables (region, key_name, admin_cidr, instance_type, tags)
+- `aws_region`
 
-- `outputs.tf` — public IP, instance ID, etc.
+- `key_name`
 
-- `terraform.tfvars.example` — template for local variable values
+- `admin_cidr`
 
-- `versions.tf` — provider + Terraform version constraints
+- `instance_type`
+
+- `tags` / `project_name` (whatever you use)
 
 ---
 
@@ -38,25 +34,21 @@ It provisions a single AWS EC2 instance with enterprise-style tagging and clean 
 
 ---
 
-## Configure Variables
+## How to run
 
 `cp terraform.tfvars.example terraform.tfvars`
 
-- **What this does:** copies the example tfvars template into the real tfvars file Terraform will read.
+`terraform fmt`
 
-`vi terraform.tfvars`
-
-- **What this does:** opens the tfvars file so you can set values like key_name and admin_cidr.
-
-Note: terraform.tfvars should remain local only (not committed).
-
----
-
-## Deploy
+- **What this does:** auto-formats your .tf files to standard Terraform style (clean diffs, easier reviews).
 
 `terraform init`
 
 - **What this does:** downloads providers/modules and initializes the working directory.
+
+`terraform validate`
+
+- What this does: downloads the AWS provider and initializes the working directory (creates `.terraform/`).
 
 `terraform plan`
 
@@ -74,13 +66,15 @@ Note: terraform.tfvars should remain local only (not committed).
 
 - **What this does:** prints outputs (like public IP) after apply.
 
----
-
-## SSH:
+### SSH:
 
 `ssh -i ~/.ssh/<your-key>.pem ec2-user@<public-ip>`
 
 - **What this does:** connects to the instance using your SSH key.
+
+### Confirm OS
+
+- `cat /etc/os-release`
 
 ---
 
@@ -89,4 +83,10 @@ Note: terraform.tfvars should remain local only (not committed).
 `terraform destroy`
 
 - **What this does:** deletes all resources created by this stack using Terraform state.
+
+---
+
+## Notes 
+
+Do not commit `terraform.tfvars` (contains local values).
 

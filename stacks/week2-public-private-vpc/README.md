@@ -1,13 +1,14 @@
 # Week 2 — Public + Private VPC (Enterprise Upgrade)
 
-## Goal
+## What this builds
 
-Move from “a server” to “a network” by building a real-world AWS VPC layout:
-- Public subnet: bastion + NAT Gateway
-- Private subnet: app instance (no public IP)
-- Internet ingress: only to bastion (SSH from my IP)
-- Private access: SSH to app only via bastion security group
-- Private egress: app reaches internet via NAT (outbound only)
+- VPC with DNS enabled
+- Public subnet (bastion + NAT Gateway)
+- Private subnet (app instance, no public IP)
+- Internet Gateway
+- Route tables (public → IGW, private → NAT)
+- Security groups (admin → bastion → app)
+- 2× EC2 instances (bastion + app)
 
 ---
 
@@ -21,21 +22,10 @@ App (private) → NAT Gateway (public) → IGW → Internet
 
 ---
 
-## What Terraform builds
-
-- VPC (+ DNS hostnames/support)
-- 1 public subnet + 1 private subnet (single AZ for simplicity; expand to multi-AZ later)
-- Internet Gateway
-- Public route table: `0.0.0.0/0 → IGW`
-- NAT Gateway (public subnet + EIP)
-- Private route table: `0.0.0.0/0 → NAT`
-- Security groups:
-  - Bastion: SSH only from `my_ip_cidr`
-
-  - App: SSH only from bastion SG
-- EC2:
-  - Bastion (public IP)
-  - App (private IP only)
+## Prerequisites
+- Week 1 stack completed (key pair, AWS creds)
+- Terraform >= 1.5
+- Valid `terraform.tfvars`
 
 ---
 
@@ -89,7 +79,7 @@ Host <NAME_FOR_APP>
 
 ---
 
-## Clean up (avoid NAT costs)
+## Clean up (avoid NAT data charges)
 
 `terraform destroy -var-file=terraform.tfvars`
 

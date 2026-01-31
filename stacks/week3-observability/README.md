@@ -1,95 +1,102 @@
-# Week 2 — Public + Private VPC (Enterprise Upgrade)
+# Week 3 — Observability Stack (Prometheus + Grafana + Alerting)
 
-## Goal
-
-Move from “a server” to “a network” by building a real-world AWS VPC layout:
-- Public subnet: bastion + NAT Gateway
-- Private subnet: app instance (no public IP)
-- Internet ingress: only to bastion (SSH from my IP)
-- Private access: SSH to app only via bastion security group
-- Private egress: app reaches internet via NAT (outbound only)
-
----
-
-## Architecture (traffic story)
-
-Admins:
-Internet → Bastion (public subnet) → SSH → App (private subnet)
-
-Outbound updates:
-App (private) → NAT Gateway (public) → IGW → Internet
+## What this builds
+- Monitoring EC2 host
+- Prometheus (Docker)
+- Grafana (Docker)
+- Alertmanager (Docker)
+- Node Exporter on target hosts
+- Alert rules and webhook integration
 
 ---
 
-## What Terraform builds
+## Components
 
-- VPC (+ DNS hostnames/support)
-- 1 public subnet + 1 private subnet (single AZ for simplicity; expand to multi-AZ later)
-- Internet Gateway
-- Public route table: `0.0.0.0/0 → IGW`
-- NAT Gateway (public subnet + EIP)
-- Private route table: `0.0.0.0/0 → NAT`
-- Security groups:
-  - Bastion: SSH only from `my_ip_cidr`
+- Prometheus: metrics scraping and rule evaluation
+- Grafana: dashboards
+- Alertmanager: alert routing
+- Node Exporter: host metrics
+- Webhook receiver: alert sink
 
-  - App: SSH only from bastion SG
-- EC2:
-  - Bastion (public IP)
-  - App (private IP only)
+---
+
+## Prerequisites
+
+- Week 2 VPC stack deployed
+- SSH access via bastion
+- Docker + Compose available on monitoring host
+- Target hosts running node_exporter
 
 ---
 
 ## How to run
 
+### SSH to monitoring host
+
+`ssh week3-monitoring`
+
+### Install Docker (AL2023)
+
 ```
-terraform fmt
-terraform init
-terraform validate
-terraform plan -var-file=terraform.tfvars
-terraform apply -var-file=terraform.tfvars
-terraform output
+sudo dnf -y install docker docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker ec2-user
+newgrp docker
+```
+
+### Start monitoring stack
+
+```
+cd /opt/monitoring
+docker compose up -d
+docker ps
 ```
 
 ---
 
-## SSH into the private instance
+## Validation
 
-Use ProxyJump:
+### Prometheus
 
-`ssh -i <PATH_TO_KEY> -J ec2-user@<BASTION_PUBLIC_IP> ec2-user@<APP_PRIVATE_IP>`
+`curl http://localhost:9090/-/ready`
 
-### Note (See Troubleshooting)
+Open:
 
-If SSH to bastion works but ProxyJump doesn't:
+`http://<monitoring-ip>:9090/targets`
 
-1) Add identity files to .ssh/config
+All targets should be UP.
+
+### Grafana
+
+Open:
+
+`http://<monitoring-ip>:3000`
+
+Add Prometheus datasource and import dashboard.
+
+### Node Exporter (on targets)
 
 ```
-Host <NAME_FOR_BASTION>
-  HostName <BASTION_PUBLIC_IP>
-  User ec2-user
-  IdentityFile <PATH_TO_KEY>
-  IdentitiesOnly yes
-
-Host <NAME_FOR_APP>
-  HostName <APP_PRIVATE_IP>
-  User ec2-user
-  IdentityFile <PATH_TO_KEY>
-  IdentitiesOnly yes
-  ProxyJump <NAME_FOR_BASTION>
+sudo ss -ltnp | grep :9100
+curl http://localhost:9100/metrics | head
 ```
 
-2) Edit permissions
+### Alertmanager
 
-`chmod 600 ~/.ssh/config`
-
-3) SSH again
-
-`ssh <NAME_FOR_APP>`
+`sudo ss -ltnp | grep :9093`
 
 ---
 
-## Clean up (avoid NAT costs)
+## Teardown
 
-`terraform destroy -var-file=terraform.tfvars`
+`docker compose down`
 
+(Optional)
+
+`terraform destroy`
+
+---
+
+## Cost note
+
+Monitoring host, NAT, and data transfer incur AWS charges. Destroy when idle.
